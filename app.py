@@ -15,7 +15,6 @@ from flask_cors import CORS
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
 
-
 class CustomJSONEncoder(JSONEncoder):
     def default(self, obj):
         if isinstance(obj, ObjectId):
@@ -41,7 +40,15 @@ celery = make_celery(app)
 
 client = MongoClient('mongodb://mongodb:27017/')
 db = client['media_monitoring']
-collection = db['alerts']
+
+def create_indexes():
+    db['users'].create_index([('username', 1)], unique=True)
+    db['alerts'].create_index([('title', 'text'), ('description', 'text')])
+    db['configurations'].create_index([('name', 1)], unique=True)
+
+@app.before_first_request
+def initialize_app():
+    create_indexes()
 
 def load_config_from_db():
     config = db['configurations'].find_one({"name": "default"})
@@ -78,7 +85,6 @@ def login():
             flash('Username does not exist')
     return render_template('login.html')
 
-
 @celery.task(bind=True)
 def process_feeds_task(self, feeds, keywords):
     for index, site in enumerate(feeds, start=1):
@@ -99,7 +105,7 @@ def process_item(item, site, keywords):
     content = f"{title} {description}".lower()
     words = content.split()
     if any(word.lower() in keywords for word in words):
-        collection.update_one(
+        db['alerts'].update_one(
             {"link": link}, 
             {"$setOnInsert": {
                 "site": site,
@@ -132,7 +138,6 @@ def test_bcrypt():
     hashed = bcrypt.hashpw(password, bcrypt.gensalt())
     return hashed
 
-
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
     try:
@@ -149,7 +154,6 @@ def admin_login():
         app.logger.error(f"Login error: {e}")
         flash('An error occurred during login.')
     return render_template('admin_login.html')
-
 
 @app.route('/admin/dashboard')
 def admin_dashboard():
@@ -196,19 +200,14 @@ def show_alerts():
     per_page = 20
     skip = (page - 1) * per_page
     search_query = request.args.get('search', '')
-    query = {}
     if search_query:
-        regex_pattern = f".*{search_query}.*"
-        query = {"$or": [
-            {"title": {"$regex": regex_pattern, "$options": "i"}},
-            {"description": {"$regex": regex_pattern, "$options": "i"}}
-        ]}
-    alerts = collection.find(query).skip(skip).limit(per_page)
-    total_alerts = collection.count_documents(query)
+        query = {"$text": {"$search": search_query}}
+    else:
+        query = {}
+    alerts = db['alerts'].find(query).skip(skip).limit(per_page)
+    total_alerts = db['alerts'].count_documents(query)
     total_pages = (total_alerts + per_page - 1) // per_page
     sanitized_alerts = []
-    config = load_config_from_db()
-    keywords = config.get('keywords', [])
     for alert in alerts:
         alert['description'] = bleach.clean(alert.get('description', ''), tags=['span'], attributes={'span': ['class']}, strip=True)
         alert['title'] = bleach.clean(alert.get('title', ''), tags=['span'], attributes={'span': ['class']}, strip=True)
@@ -241,8 +240,6 @@ def delete_site(index):
         if 'sites' in config and 0 <= index < len(config['sites']):
             del config['sites'][index]
             db['configurations'].update_one({"name": "default"}, {"$set": {"sites": config['sites']}})
-        else:
-            print("Index out of bounds or 'sites' list not found.")
     except Exception as e:
         print(f"An error occurred: {e}")
     return redirect(url_for('config_management'))
@@ -255,8 +252,6 @@ def delete_keyword(index):
         if 'keywords' in config and 0 <= index < len(config['keywords']):
             del config['keywords'][index]
             db['configurations'].update_one({"name": "default"}, {"$set": {"keywords": config['keywords']}})
-        else:
-            print("Index out of bounds or no keywords list found.")
     except Exception as e:
         print(f"An error occurred: {e}")
     return redirect(url_for('config_management'))
@@ -309,3 +304,5 @@ def serve(path):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+
