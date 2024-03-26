@@ -1,9 +1,11 @@
-from flask import Flask, jsonify, request, redirect, url_for, send_from_directory, render_template
+from flask import Flask, jsonify, request, redirect, url_for, send_from_directory, render_template, session, flash
+from functools import wraps
 from bson import ObjectId
 from flask.json import JSONEncoder
 import requests
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
+import bcrypt
 from datetime import datetime
 import dateutil.parser
 import bleach
@@ -11,19 +13,22 @@ import re
 from celery import Celery
 from flask_cors import CORS
 import os
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 class CustomJSONEncoder(JSONEncoder):
     def default(self, obj):
         if isinstance(obj, ObjectId):
             return str(obj)
-        return super(CustomJSONEncoder, self).default(obj) 
+        return super(CustomJSONEncoder, self).default(obj)
 
 app = Flask(__name__, static_url_path='', static_folder='mm3/build')
 app.json_encoder = CustomJSONEncoder
 CORS(app)
 app.config.update(
     CELERY_BROKER_URL='redis://localhost:6379/0',
-    CELERY_RESULT_BACKEND='redis://redis:6379/0'
+    CELERY_RESULT_BACKEND='redis://redis:6379/0',
+    SECRET_KEY='your_secret_key'
 )
 
 def make_celery(app):
@@ -44,6 +49,36 @@ def load_config_from_db():
         raise Exception("Failed to load configuration from MongoDB")
     return config
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login'))
+        user = db['users'].find_one({'username': session['user']})
+        if not user:
+            session.pop('user', None)
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = db['users'].find_one({'username': username})
+        if user:
+            stored_password = user['password']
+            if check_password_hash(stored_password, password):
+                session['user'] = username
+                return redirect(url_for('config_management'))
+            else:
+                flash('Invalid username or password')
+        else:
+            flash('Username does not exist')
+    return render_template('login.html')
+
+
 @celery.task(bind=True)
 def process_feeds_task(self, feeds, keywords):
     for index, site in enumerate(feeds, start=1):
@@ -54,7 +89,6 @@ def process_feeds_task(self, feeds, keywords):
             process_item(item, site, keywords)
         self.update_state(state='PROGRESS', meta={'current': index, 'total': len(feeds)})
     return {'current': len(feeds), 'total': len(feeds), 'status': 'Task completed'}
-
 
 def process_item(item, site, keywords):
     title = get_clean_text(item.find('title')) or 'No Title'
@@ -78,7 +112,6 @@ def process_item(item, site, keywords):
             }},
             upsert=True
         )
-        send_telegram_notification('-1002000986167', f'New alert: {title} - {link} from {site}')
 
 def find_pub_date(item):
     for field in ['pubDate', 'dc:date']:
@@ -93,20 +126,62 @@ def get_clean_text(element):
         return ' '.join(soup.get_text().split())
     return ""
 
-def highlight_keywords(text, keywords):
-    pattern = re.compile(r'\b(' + '|'.join(re.escape(keyword) for keyword in keywords) + r')\b', re.IGNORECASE)
-    highlighted_text = pattern.sub(lambda match: f"<span class='highlight'>{match.group(0)}</span>", text)
-    return highlighted_text
+@app.route('/test-bcrypt')
+def test_bcrypt():
+    password = b"super secret password"
+    hashed = bcrypt.hashpw(password, bcrypt.gensalt())
+    return hashed
 
-def send_telegram_notification(chat_id, message):
-    token = '6716988388:AAGo4imuLdspREQ7jq8pkRAWLT4OFxNZxHk'
-    url = f'https://api.telegram.org/bot{token}/sendMessage'
-    data = {'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
     try:
-        response = requests.post(url, data=data)
-        response.raise_for_status()
+        if request.method == 'POST':
+            username = request.form['username']
+            password = request.form['password'].encode('utf-8')
+            admin_user = db['admins'].find_one({'username': username})
+            if admin_user and bcrypt.checkpw(password, admin_user['password']):
+                session['admin'] = username
+                return redirect(url_for('admin_dashboard'))
+            else:
+                flash('Invalid username or password')
     except Exception as e:
-        print(f"Failed to send Telegram notification: {e}")
+        app.logger.error(f"Login error: {e}")
+        flash('An error occurred during login.')
+    return render_template('admin_login.html')
+
+
+@app.route('/admin/dashboard')
+def admin_dashboard():
+    if 'admin' not in session:
+        return redirect(url_for('admin_login'))
+    users = list(db['users'].find())
+    return render_template('admin_dashboard.html', users=users)
+
+@app.route('/admin/add_user', methods=['POST'])
+def admin_add_user():
+    if 'admin' not in session:
+        return jsonify({'error': 'Unauthorized'}), 403
+    username = request.form['username']
+    first_name = request.form['first_name']
+    last_name = request.form['last_name']
+    email = request.form['email']
+    password = generate_password_hash(request.form['password'])
+    rank = request.form['rank']
+    db['users'].insert_one({
+        'username': username,
+        'first_name': first_name,
+        'last_name': last_name,
+        'email': email,
+        'password': password,
+        'rank': rank
+    })
+    return redirect(url_for('admin_dashboard'))
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('admin', None)
+    return redirect(url_for('admin_login'))
 
 @app.route('/api/alerts')
 def api_show_alerts():
@@ -135,8 +210,8 @@ def show_alerts():
     config = load_config_from_db()
     keywords = config.get('keywords', [])
     for alert in alerts:
-        alert['description'] = bleach.clean(highlight_keywords(alert.get('description', ''), keywords), tags=['span'], attributes={'span': ['class']}, strip=True)
-        alert['title'] = bleach.clean(highlight_keywords(alert.get('title', ''), keywords), tags=['span'], attributes={'span': ['class']}, strip=True)
+        alert['description'] = bleach.clean(alert.get('description', ''), tags=['span'], attributes={'span': ['class']}, strip=True)
+        alert['title'] = bleach.clean(alert.get('title', ''), tags=['span'], attributes={'span': ['class']}, strip=True)
         sanitized_alerts.append(alert)
     return jsonify({
         'alerts': sanitized_alerts,
@@ -145,18 +220,21 @@ def show_alerts():
     })
 
 @app.route('/add-site', methods=['POST'])
+@login_required
 def add_site():
     site_url = request.form.get('siteUrl')
     db['configurations'].update_one({"name": "default"}, {"$addToSet": {"sites": site_url}})
     return redirect(url_for('config_management'))
 
 @app.route('/add-keyword', methods=['POST'])
+@login_required
 def add_keyword():
     keyword = request.form.get('keyword').lower()
     db['configurations'].update_one({"name": "default"}, {"$addToSet": {"keywords": keyword}})
     return redirect(url_for('config_management'))
 
 @app.route('/delete-site/<int:index>', methods=['GET'])
+@login_required
 def delete_site(index):
     config = load_config_from_db()
     try:
@@ -170,6 +248,7 @@ def delete_site(index):
     return redirect(url_for('config_management'))
 
 @app.route('/delete-keyword/<int:index>', methods=['GET'])
+@login_required
 def delete_keyword(index):
     config = load_config_from_db()
     try:
@@ -189,6 +268,7 @@ def run_script():
     return jsonify({"task_id": task.id}), 202
 
 @app.route('/task-status/<task_id>')
+@login_required
 def task_status(task_id):
     task = process_feeds_task.AsyncResult(task_id)
     if task.state == 'PENDING':
@@ -205,11 +285,13 @@ def task_status(task_id):
     return jsonify(response)
 
 @app.route('/config-management')
+@login_required
 def config_management():
     config = load_config_from_db()
     return render_template('config_management.html', sites=config['sites'], keywords=config['keywords'])
 
 @app.route('/workers')
+@login_required
 def show_workers():
     i = celery.control.inspect()
     workers = i.registered()
@@ -220,10 +302,10 @@ def show_workers():
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    if path != "" and os.path.exists(os.path.join(app.root_path, 'client', 'build', path)):
-        return send_from_directory(os.path.join(app.root_path, 'client', 'build'), path)
+    if path != "" and os.path.exists(os.path.join(app.root_path, 'mm3', 'build', path)):
+        return send_from_directory(os.path.join(app.root_path, 'mm3', 'build'), path)
     else:
-        return send_from_directory(os.path.join(app.root_path, 'client', 'build'), 'index.html')
+        return send_from_directory(os.path.join(app.root_path, 'mm3', 'build'), 'index.html')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
