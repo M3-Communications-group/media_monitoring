@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis Workers</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+    <div class="container mt-5">
+        <h2>Redis Workers</h2>
+        {% if workers == "No workers found." %}
+            <p>No workers found.</p>
+        {% else %}
+            <div>
+                {% for worker, tasks in workers.items() %}
+                    <h4>{{ worker }}</h4>
+                    <ul>
+                        {% for task in tasks %}
+                            <li>{{ task }}</li>
+                        {% endfor %}
+                    </ul>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alerts</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+
+    <style>
+        .list-group-item:hover {
+            cursor: pointer;
+            background-color: #eee;
+        }
+        .highlight {
+            background-color: #ffff0054;
+        }
+    </style>
+    
+</head>
+<body>
+    <div class="container mt-5">
+        <h2 class="mb-4">Latest Alerts</h2>
+        
+        <form action="{{ url_for('show_alerts') }}" method="get" class="mb-4">
+            <div class="input-group mb-3">
+                <input type="text" class="form-control" placeholder="Search alerts..." name="search" value="{{ search_query }}">
+                <div class="input-group-append">
+                    <button class="btn btn-outline-secondary" type="submit">Search</button>
+                </div>
+            </div>
+        </form>
+        
+        <div class="list-group">
+            {% for alert in alerts %}
+            <div class="list-group-item flex-column align-items-start" data-toggle="modal" data-target="#modal{{ loop.index }}">
+                <div class="d-flex w-100 justify-content-between">
+                    <h5 class="mb-1">{{ alert['title']|safe }}</h5>
+                    <small>{{ alert['pub_date'] }}</small>
+                </div>
+            </div>
+
+            <div class="modal fade" id="modal{{ loop.index }}" tabindex="-1" aria-labelledby="modalLabel{{ loop.index }}" aria-hidden="true">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="modalLabel{{ loop.index }}">{{ alert['title']|safe }}</h5>
+                            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                                <span aria-hidden="true">&times;</span>
+                            </button>
+                        </div>
+                        <div class="modal-body">
+                            <a class="btn btn-primary" href="{{ alert['link'] }}" role="button">Article URL</a>
+                            <br /><br />
+                            {{ alert['description']|safe }}
+                            <br />
+                            {% if alert['media_urls'] %}
+                                {% for url in alert['media_urls'] %}
+                                    <img src="{{ url }}" class="img-fluid mt-2" alt="Media" style="max-height: 200px;">
+                                {% endfor %}
+                            {% endif %}
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <nav aria-label="Page navigation example" class="mt-4">
+            <ul class="pagination">
+                {% if current_page > 1 %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('show_alerts', page=current_page-1) }}" aria-label="Previous">
+                        <span aria-hidden="true">&laquo;</span>
+                    </a>
+                </li>
+                {% endif %}
+                
+                {% for page_num in range(1, total_pages + 1) %}
+                <li class="page-item {{ 'active' if page_num == current_page else '' }}">
+                    <a class="page-link" href="{{ url_for('show_alerts', page=page_num) }}">{{ page_num }}</a>
+                </li>
+                {% endfor %}
+                
+                {% if current_page < total_pages %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('show_alerts', page=current_page+1) }}" aria-label="Next">
+                        <span aria-hidden="true">&raquo;</span>
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.6/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+</body>
+</html>
